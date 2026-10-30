@@ -31,6 +31,20 @@ def _active():
     return paid.enabled() and paid.configured()
 
 
+def _client_ip() -> str:
+    # Vercel sets forwarded-for at its edge. Do not persist plaintext IP.
+    return (request.headers.get("x-forwarded-for") or request.remote_addr or "unknown").split(",")[0].strip()
+
+
+def _limit(scope: str, maximum: int):
+    try:
+        if not paid.rate_allowed(_client_ip(), scope, maximum):
+            return _reply({"error": "Слишком много попыток. Повтори через несколько минут."}, 429)
+    except Exception:
+        return _reply({"error": "Защита сервиса временно недоступна. Попробуй позже."}, 503)
+    return None
+
+
 def _email_body():
     if not request.is_json or (request.content_length is not None and request.content_length > 2048):
         raise ValueError("Нужен короткий JSON-запрос.")
@@ -62,6 +76,9 @@ def checkout():
         return _reply({"error": "Оплата ещё не подключена. Деньги не списываются."}, 503)
     if not _same_origin():
         return _reply({"error": "Недопустимый источник запроса."}, 403)
+    limited = _limit("checkout", 8)
+    if limited is not None:
+        return limited
     try:
         data = _email_body()
         if data.get("agreed") is not True:
@@ -81,6 +98,9 @@ def request_code():
         return _reply({"error": "Сервис входа ещё не подключён."}, 503)
     if not _same_origin():
         return _reply({"error": "Недопустимый источник запроса."}, 403)
+    limited = _limit("request-code", 12)
+    if limited is not None:
+        return limited
     try:
         data = _email_body()
         email = paid.normalize_email(data.get("email"))
@@ -99,6 +119,9 @@ def verify_code():
         return _reply({"error": "Сервис входа ещё не подключён."}, 503)
     if not _same_origin():
         return _reply({"error": "Недопустимый источник запроса."}, 403)
+    limited = _limit("verify-code", 20)
+    if limited is not None:
+        return limited
     try:
         data = _email_body()
         email = paid.normalize_email(data.get("email"))
