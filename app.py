@@ -126,7 +126,7 @@ def home():
 def status():
     provider, model = active_provider()
     return json_response({'available': bool(provider), 'model': model, 'provider': provider,
-                          'daily_limit': DAILY_LIMIT})
+                          'daily_limit': DAILY_LIMIT, 'remaining': max(0, DAILY_LIMIT - _quota_usage())})
 
 
 @app.post('/api/chat')
@@ -143,7 +143,7 @@ def chat():
         return json_response({'error': 'Нужен JSON.'}, 415)
     used = _quota_usage()
     if used >= DAILY_LIMIT:
-        return json_response({'error': 'Дневной лимит ИИ-тренировки исчерпан. Продолжи завтра или попробуй упражнения без ИИ.'}, 429)
+        return json_response({'error': 'На сегодня тренировка завершена! Ты использовал все 18 ответов ИИ. Новые диалоги будут доступны завтра. Пока можешь повторить упражнения и прочитать рекомендации.', 'remaining': 0, 'daily_limit': DAILY_LIMIT}, 429)
     if request.content_length is None or request.content_length > course.MAX_BODY:
         return json_response({'error': 'Недопустимый размер запроса.'}, 413)
     try:
@@ -190,6 +190,8 @@ def chat():
     except (URLError, TimeoutError, OSError, ValueError, RuntimeError):
         return json_response({'error': 'Не удалось получить ответ ИИ. Попробуй ещё раз.'}, 502)
     output = finalize(output, scenario, round_no, message, history)
+    output['daily_remaining'] = max(0, DAILY_LIMIT - used - 1)
+    output['daily_limit'] = DAILY_LIMIT
     return _set_quota(json_response(output), used + 1)
 
 
