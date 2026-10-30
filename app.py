@@ -19,12 +19,15 @@ from urllib.request import Request, urlopen
 
 from flask import Flask, Response, request, send_file
 from course_quality import finalize
+import paid_access as paid
+from paid_routes import bp as paid_bp
 
 import ai_server as course
 
 HERE = Path(__file__).resolve().parent
 app = Flask(__name__, static_folder=None)
-app.config['MAX_CONTENT_LENGTH'] = course.MAX_BODY
+app.config['MAX_CONTENT_LENGTH'] = max(course.MAX_BODY, 25000)
+app.register_blueprint(paid_bp)
 course.MODEL = os.environ.get('OPENAI_MODEL', 'gpt-4.1-mini')
 GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-3.5-flash-lite')
 # Browser-level pilot allowance. For public traffic ALSO enable Vercel WAF rate limiting:
@@ -116,8 +119,22 @@ def json_response(obj: dict, status: int = 200):
 @app.get('/')
 @app.get('/index.html')
 def home():
+    if paid.enabled():
+        if not paid.configured():
+            response = send_file(HERE / 'paywall.html', mimetype='text/html')
+            response.status_code = 503
+            response.headers['Cache-Control'] = 'no-store'
+            return response
+        try:
+            email = paid.session_email(request.cookies.get(paid.COOKIE_NAME, ''))
+        except Exception:
+            return json_response({'error': 'Временно недоступна проверка оплаченного доступа.'}, 503)
+        if not email:
+            response = send_file(HERE / 'paywall.html', mimetype='text/html')
+            response.headers['Cache-Control'] = 'no-store'
+            return response
     response = send_file(HERE / 'index.html', mimetype='text/html')
-    response.headers['Cache-Control'] = 'no-cache'
+    response.headers['Cache-Control'] = 'no-store' if paid.enabled() else 'no-cache'
     response.headers['X-Content-Type-Options'] = 'nosniff'
     return response
 
@@ -125,12 +142,35 @@ def home():
 @app.get('/api/status')
 def status():
     provider, model = active_provider()
+    if paid.enabled():
+        if not paid.configured():
+            return json_response({'error': 'Платный доступ настраивается.'}, 503)
+        try:
+            email = paid.session_email(request.cookies.get(paid.COOKIE_NAME, ''))
+            if not email:
+                return json_response({'error': 'Войди в оплаченный аккаунт.'}, 401)
+            quota = paid.account_status(email)
+        except Exception:
+            return json_response({'error': 'Сервис доступа временно недоступен.'}, 503)
+        return json_response({'available': bool(provider), 'model': model, 'provider': provider,
+                              'daily_limit': quota['daily_limit'], 'remaining': quota['remaining'],
+                              'total_remaining': quota['total_remaining']})
     return json_response({'available': bool(provider), 'model': model, 'provider': provider,
                           'daily_limit': DAILY_LIMIT, 'remaining': max(0, DAILY_LIMIT - _quota_usage())})
 
 
 @app.post('/api/chat')
 def chat():
+    paid_email = None
+    if paid.enabled():
+        if not paid.configured():
+            return json_response({'error': 'Оплаченный доступ пока настраивается.'}, 503)
+        try:
+            paid_email = paid.session_email(request.cookies.get(paid.COOKIE_NAME, ''))
+        except Exception:
+            return json_response({'error': 'Проверка доступа временно недоступна.'}, 503)
+        if not paid_email:
+            return json_response({'error': 'Войди в оплаченный аккаунт, чтобы начать тренировку.'}, 401)
     origin = request.headers.get('Origin', '')
     if origin and urlparse(origin).netloc != request.host:
         return json_response({'error': 'Недопустимый источник запроса.'}, 403)
@@ -141,8 +181,8 @@ def chat():
         return json_response({'error': 'Недопустимый источник запроса.'}, 403)
     if not request.is_json:
         return json_response({'error': 'Нужен JSON.'}, 415)
-    used = _quota_usage()
-    if used >= DAILY_LIMIT:
+    used = _quota_usage() if not paid_email else 0
+    if not paid_email and used >= DAILY_LIMIT:
         return json_response({'error': 'На сегодня тренировка завершена! Ты использовал все 18 ответов ИИ. Новые диалоги будут доступны завтра. Пока можешь повторить упражнения и прочитать рекомендации.', 'remaining': 0, 'daily_limit': DAILY_LIMIT}, 429)
     if request.content_length is None or request.content_length > course.MAX_BODY:
         return json_response({'error': 'Недопустимый размер запроса.'}, 413)
@@ -165,9 +205,25 @@ def chat():
         if len(bucket) >= course.RATE_LIMIT:
             return json_response({'error': 'Лимит обращений к ИИ. Попробуй позже.'}, 429)
         bucket.append(now)
+    reservation_day = None
+    if paid_email:
+        try:
+            allowed, reservation_day, _remaining = paid.reserve_turn(paid_email)
+        except Exception:
+            return json_response({'error': 'Сервис оплаченных тренировок временно недоступен.'}, 503)
+        if not allowed:
+            return json_response({'error': 'Доступный пакет ИИ-тренировок исчерпан на сегодня или целиком. Обычные упражнения остаются доступны.', 'remaining': 0, 'daily_limit': paid.DAILY_TURNS}, 429)
+    def refund_paid_turn():
+        if paid_email and reservation_day:
+            try:
+                paid.refund_turn(paid_email, reservation_day)
+            except Exception:
+                import logging
+                logging.exception('Could not refund failed AI request')
     try:
         output = gemini_reply(scenario, round_no, message, history) if provider == 'gemini' else course.openai_reply(scenario, round_no, message, history)
     except HTTPError as error:
+        refund_paid_turn()
         # Keep diagnostics on the server, without exposing keys or student messages.
         import logging
         provider_name, _ = active_provider()
@@ -188,8 +244,23 @@ def chat():
             return json_response({'error': 'Модель недоступна для проекта. Проверь GEMINI_MODEL в Vercel.'}, 502)
         return json_response({'error': 'Сервис ИИ вернул ошибку. Проверь настройки модели и доступ.'}, 502)
     except (URLError, TimeoutError, OSError, ValueError, RuntimeError):
+        refund_paid_turn()
         return json_response({'error': 'Не удалось получить ответ ИИ. Попробуй ещё раз.'}, 502)
-    output = finalize(output, scenario, round_no, message, history)
+    try:
+        output = finalize(output, scenario, round_no, message, history)
+    except Exception:
+        refund_paid_turn()
+        return json_response({'error': 'Не удалось обработать ответ ИИ. Попробуй позже.'}, 502)
+    if paid_email:
+        try:
+            quota = paid.account_status(paid_email)
+        except Exception:
+            # The AI reply was successful and reservation already committed.
+            quota = {'remaining': 0, 'total_remaining': 0}
+        output['daily_remaining'] = quota['remaining']
+        output['daily_limit'] = paid.DAILY_TURNS
+        output['total_remaining'] = quota['total_remaining']
+        return json_response(output)
     output['daily_remaining'] = max(0, DAILY_LIMIT - used - 1)
     output['daily_limit'] = DAILY_LIMIT
     return _set_quota(json_response(output), used + 1)
