@@ -81,7 +81,8 @@ def enabled() -> bool:
 def configured() -> bool:
     return all(os.getenv(k, "").strip() for k in (
         "DATABASE_URL", "PAID_ACCESS_SECRET", "PRODAMUS_FORM_URL",
-        "PRODAMUS_SECRET", "PRODAMUS_SYS", "RESEND_API_KEY", "MAIL_FROM"))
+        "PRODAMUS_SECRET", "PRODAMUS_SYS", "RESEND_API_KEY", "MAIL_FROM",
+        "LEGAL_OFFER_URL", "LEGAL_PRIVACY_URL", "SUPPORT_EMAIL")) and len(os.getenv("PAID_ACCESS_SECRET", "")) >= 32
 
 
 def database():
