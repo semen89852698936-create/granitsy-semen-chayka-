@@ -23,7 +23,10 @@ from sqlalchemy import BigInteger, Column, Integer, String, create_engine, selec
 from sqlalchemy.orm import Session, declarative_base
 
 PRICE = Decimal("399.00")
-ACCESS_DAYS = 30
+# An explicit lifetime entitlement marker in the existing BigInteger column.
+# This avoids database migrations and preserves already-created account records.
+# Login sessions still expire after 30 days, but can be renewed free of charge.
+LIFETIME_UNTIL = 253402300799  # 9999-12-31 23:59:59 UTC
 TOTAL_TURNS = 90
 DAILY_TURNS = 18
 COOKIE_NAME = "granitsy_paid_session"
@@ -142,7 +145,7 @@ def account_status(email: str, now=None):
         used = account.daily_count if account.daily_day == short_day(now) else 0
         return {"active": True, "remaining": max(0, min(DAILY_TURNS - used, account.remaining_turns)),
                 "daily_limit": DAILY_TURNS, "total_remaining": account.remaining_turns,
-                "paid_until": account.paid_until}
+                "lifetime_access": account.paid_until == LIFETIME_UNTIL}
 
 
 def session_email(raw_token: str) -> str | None:
@@ -460,10 +463,11 @@ def accept_prodamus_webhook(flat: dict, signature: str) -> bool:
         order.provider_order_id = str(flat.get("order_id", ""))[:100]
         account = db.get(Account, email, with_for_update=True)
         if account is None:
-            account = Account(email=email, paid_until=now + ACCESS_DAYS * 86400,
+            account = Account(email=email, paid_until=LIFETIME_UNTIL,
                               remaining_turns=TOTAL_TURNS, daily_day="", daily_count=0)
             db.add(account)
         else:
-            account.paid_until = max(now, account.paid_until) + ACCESS_DAYS * 86400
+            # A second purchase adds another 90 AI replies; materials remain lifetime.
+            account.paid_until = LIFETIME_UNTIL
             account.remaining_turns += TOTAL_TURNS
     return True
