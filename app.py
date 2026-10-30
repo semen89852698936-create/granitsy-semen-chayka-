@@ -8,12 +8,17 @@ from __future__ import annotations
 import json
 import os
 import time
+import hmac
+import base64
+import hashlib
+import datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse, quote
 from urllib.request import Request, urlopen
 
 from flask import Flask, Response, request, send_file
+from course_quality import finalize
 
 import ai_server as course
 
@@ -22,6 +27,39 @@ app = Flask(__name__, static_folder=None)
 app.config['MAX_CONTENT_LENGTH'] = course.MAX_BODY
 course.MODEL = os.environ.get('OPENAI_MODEL', 'gpt-4.1-mini')
 GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-3.5-flash-lite')
+# Browser-level pilot allowance. For public traffic ALSO enable Vercel WAF rate limiting:
+# cookies can be removed and are not a substitute for network-level enforcement.
+DAILY_LIMIT = max(3, min(60, int(os.environ.get('AI_DAILY_LIMIT', '9'))))
+COOKIE = 'granitsy_ai_daily'
+COOKIE_MAX_AGE = 86400
+
+
+def _sign_token(value: str) -> str:
+    # API key material never travels to the browser. Signature invalidated on rotation.
+    secret = os.environ.get('COURSE_COOKIE_SECRET') or os.environ.get('GEMINI_API_KEY') or os.environ.get('OPENAI_API_KEY', '')
+    return hmac.new(secret.encode('utf-8'), value.encode('ascii'), hashlib.sha256).hexdigest()
+
+
+def _quota_usage() -> int:
+    today = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d')
+    raw = request.cookies.get(COOKIE, '')
+    try:
+        date, amount, sig = raw.split('.')
+        payload = date + '.' + amount
+        if date == today and hmac.compare_digest(_sign_token(payload), sig):
+            return max(0, min(DAILY_LIMIT, int(amount)))
+    except (ValueError, TypeError, OverflowError):
+        pass
+    return 0
+
+
+def _set_quota(response, count: int):
+    today = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d')
+    payload = f'{today}.{count}'
+    response.set_cookie(COOKIE, payload + '.' + _sign_token(payload),
+                        max_age=COOKIE_MAX_AGE, secure=True, httponly=True,
+                        samesite='Lax', path='/api/')
+    return response
 
 
 def active_provider():
@@ -87,7 +125,8 @@ def home():
 @app.get('/api/status')
 def status():
     provider, model = active_provider()
-    return json_response({'available': bool(provider), 'model': model, 'provider': provider})
+    return json_response({'available': bool(provider), 'model': model, 'provider': provider,
+                          'daily_limit': DAILY_LIMIT})
 
 
 @app.post('/api/chat')
@@ -98,8 +137,13 @@ def chat():
     provider, _model = active_provider()
     if not provider:
         return json_response({'error': 'ИИ ещё не подключён: добавь GEMINI_API_KEY в настройки Vercel.'}, 503)
+    if request.headers.get('Sec-Fetch-Site', 'same-origin') not in ('same-origin', 'none'):
+        return json_response({'error': 'Недопустимый источник запроса.'}, 403)
     if not request.is_json:
         return json_response({'error': 'Нужен JSON.'}, 415)
+    used = _quota_usage()
+    if used >= DAILY_LIMIT:
+        return json_response({'error': 'Дневной лимит ИИ-тренировки исчерпан. Продолжи завтра или попробуй упражнения без ИИ.'}, 429)
     if request.content_length is None or request.content_length > course.MAX_BODY:
         return json_response({'error': 'Недопустимый размер запроса.'}, 413)
     try:
@@ -143,7 +187,8 @@ def chat():
         return json_response({'error': 'Сервис ИИ вернул ошибку. Проверь настройки модели и доступ.'}, 502)
     except (URLError, TimeoutError, OSError, ValueError, RuntimeError):
         return json_response({'error': 'Не удалось получить ответ ИИ. Попробуй ещё раз.'}, 502)
-    return json_response(output)
+    output = finalize(output, scenario, round_no, message, history)
+    return _set_quota(json_response(output), used + 1)
 
 
 @app.errorhandler(413)
