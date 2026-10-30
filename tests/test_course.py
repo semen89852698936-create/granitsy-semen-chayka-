@@ -74,7 +74,18 @@ class TrainerTests(unittest.TestCase):
             'Сегодня не смогу. Предлагаю вернуться к этому в понедельник.'
         ]
         history = []
-        with patch.object(course_app, 'gemini_reply', side_effect=self.fake_reply):
+        scores = [
+            {'clarity': 1, 'respect': 2, 'boundaries': 1},
+            {'clarity': 2, 'respect': 0, 'boundaries': 2},
+            {'clarity': 2, 'respect': 2, 'boundaries': 2},
+        ]
+
+        def realistic_reply(scenario, n, message, past):
+            response = self.fake_reply(scenario, n, message, past)
+            response['signals'] = scores[n - 1]
+            return response
+
+        with patch.object(course_app, 'gemini_reply', side_effect=realistic_reply):
             for idx, sentence in enumerate(sentences, start=1):
                 body = self.payload(round_no=idx, history=history)
                 body['message'] = sentence
