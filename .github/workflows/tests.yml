@@ -14,3 +14,12 @@ jobs:
       - run: python -m pip install -r requirements.txt
       - run: python -m compileall -q app.py ai_server.py course_quality.py
       - run: python -m unittest discover -s tests -v
+      - name: Validate browser JavaScript syntax
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          source = Path('index.html').read_text('utf-8')
+          inline = source.split('<script>', 1)[1].split('</script>', 1)[0]
+          Path('/tmp/course-interface.js').write_text(inline, encoding='utf-8')
+          PY
+          node --check /tmp/course-interface.js
