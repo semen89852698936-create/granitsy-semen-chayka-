@@ -10,7 +10,8 @@ import os
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
+from urllib.request import Request, urlopen
 
 from flask import Flask, Response, request, send_file
 
@@ -20,6 +21,48 @@ HERE = Path(__file__).resolve().parent
 app = Flask(__name__, static_folder=None)
 app.config['MAX_CONTENT_LENGTH'] = course.MAX_BODY
 course.MODEL = os.environ.get('OPENAI_MODEL', 'gpt-4.1-mini')
+GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-3.5-flash-lite')
+
+
+def active_provider():
+    # A Gemini key takes priority, so the previous OpenAI key is not used.
+    if os.environ.get('GEMINI_API_KEY', '').strip():
+        return 'gemini', GEMINI_MODEL
+    if os.environ.get('OPENAI_API_KEY', '').strip():
+        return 'openai', course.MODEL
+    return None, None
+
+
+def gemini_reply(scenario, round_no, message, history):
+    key = os.environ.get('GEMINI_API_KEY', '').strip()
+    if not key:
+        raise RuntimeError('GEMINI_API_KEY_MISSING')
+    model = GEMINI_MODEL
+    endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/' + quote(model, safe='') + ':generateContent'
+    payload = {
+        'systemInstruction': {'parts': [{'text': course.SYSTEM}]},
+        'contents': [{'role': 'user', 'parts': [{'text': course.make_prompt(scenario, round_no, message, history)}]}],
+        'generationConfig': {
+            'responseMimeType': 'application/json',
+            'responseSchema': course.RESPONSE_SCHEMA,
+            'maxOutputTokens': 2048,
+            'temperature': 0.6,
+        },
+    }
+    req = Request(
+        endpoint,
+        data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
+        headers={'x-goog-api-key': key, 'Content-Type': 'application/json', 'Accept': 'application/json'},
+        method='POST'
+    )
+    with urlopen(req, timeout=35) as response:
+        data = json.load(response)
+    candidates = data.get('candidates') or []
+    if not candidates:
+        raise ValueError('Gemini returned no candidates')
+    parts = candidates[0].get('content', {}).get('parts', [])
+    raw = ''.join(p.get('text', '') for p in parts if isinstance(p, dict))
+    return course.clean_result(raw, round_no)
 
 
 def json_response(obj: dict, status: int = 200):
@@ -41,8 +84,8 @@ def home():
 
 @app.get('/api/status')
 def status():
-    enabled = bool(os.environ.get('OPENAI_API_KEY', '').strip())
-    return json_response({'available': enabled, 'model': course.MODEL if enabled else None})
+    provider, model = active_provider()
+    return json_response({'available': bool(provider), 'model': model, 'provider': provider})
 
 
 @app.post('/api/chat')
@@ -50,8 +93,9 @@ def chat():
     origin = request.headers.get('Origin', '')
     if origin and urlparse(origin).netloc != request.host:
         return json_response({'error': 'Недопустимый источник запроса.'}, 403)
-    if not os.environ.get('OPENAI_API_KEY', '').strip():
-        return json_response({'error': 'ИИ ещё не подключён: добавь OPENAI_API_KEY на сервере.'}, 503)
+    provider, _model = active_provider()
+    if not provider:
+        return json_response({'error': 'ИИ ещё не подключён: добавь GEMINI_API_KEY в настройки Vercel.'}, 503)
     if not request.is_json:
         return json_response({'error': 'Нужен JSON.'}, 415)
     if request.content_length is None or request.content_length > course.MAX_BODY:
@@ -74,11 +118,15 @@ def chat():
             return json_response({'error': 'Лимит обращений к ИИ. Попробуй позже.'}, 429)
         bucket.append(now)
     try:
-        output = course.openai_reply(scenario, round_no, message, history)
+        output = gemini_reply(scenario, round_no, message, history) if provider == 'gemini' else course.openai_reply(scenario, round_no, message, history)
     except HTTPError as error:
         if error.code == 429:
-            return json_response({'error': 'Лимит API временно исчерпан. Попробуй позже.'}, 503)
-        return json_response({'error': 'Ошибка сервиса ИИ. Проверь API-ключ и доступ к модели.'}, 502)
+            return json_response({'error': 'Достигнут временный лимит запросов к модели. Попробуй позже.'}, 503)
+        if error.code in (401, 403):
+            return json_response({'error': 'Доступ к модели отклонён. Проверь ключ и квоты проекта в AI Studio.'}, 502)
+        if error.code == 404:
+            return json_response({'error': 'Модель недоступна для проекта. Проверь GEMINI_MODEL в Vercel.'}, 502)
+        return json_response({'error': 'Сервис ИИ вернул ошибку. Проверь настройки модели и доступ.'}, 502)
     except (URLError, TimeoutError, OSError, ValueError, RuntimeError):
         return json_response({'error': 'Не удалось получить ответ ИИ. Попробуй ещё раз.'}, 502)
     return json_response(output)
