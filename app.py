@@ -1,7 +1,7 @@
-"""Vercel Flask entry point for the boundaries-course trainer.
+"""Flask entry point for the boundaries course on Vercel or a standalone host.
 
-The student's text is processed by this backend, never by a client-side API key.
-This deployment is intended for a small free non-commercial pilot.
+Student text is processed by server-side AI providers; API keys stay on the server.
+Payment and login controls are enabled separately once configuration is ready.
 """
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ import paid_access as paid
 from paid_routes import bp as paid_bp
 
 import ai_server as course
+import yandex_provider
 
 HERE = Path(__file__).resolve().parent
 app = Flask(__name__, static_folder=None)
@@ -39,7 +40,8 @@ COOKIE_MAX_AGE = 86400
 
 def _sign_token(value: str) -> str:
     # API key material never travels to the browser. Signature invalidated on rotation.
-    secret = os.environ.get('COURSE_COOKIE_SECRET') or os.environ.get('GEMINI_API_KEY') or os.environ.get('OPENAI_API_KEY', '')
+    secret = (os.environ.get('COURSE_COOKIE_SECRET') or os.environ.get('YANDEX_API_KEY')
+              or os.environ.get('GEMINI_API_KEY') or os.environ.get('OPENAI_API_KEY', ''))
     return hmac.new(secret.encode('utf-8'), value.encode('ascii'), hashlib.sha256).hexdigest()
 
 
@@ -66,11 +68,23 @@ def _set_quota(response, count: int):
 
 
 def active_provider():
-    # A Gemini key takes priority, so the previous OpenAI key is not used.
+    # Explicit provider choice lets the Russian deployment use Yandex without
+    # removing credentials for existing Vercel/Gemini deployments.
+    choice = os.environ.get('AI_PROVIDER', '').strip().lower()
+    if choice == 'yandex':
+        return ('yandex', yandex_provider.model_name()) if yandex_provider.configured() else (None, None)
+    if choice == 'gemini':
+        return ('gemini', GEMINI_MODEL) if os.environ.get('GEMINI_API_KEY', '').strip() else (None, None)
+    if choice == 'openai':
+        return ('openai', course.MODEL) if os.environ.get('OPENAI_API_KEY', '').strip() else (None, None)
+    if choice:
+        return None, None
     if os.environ.get('GEMINI_API_KEY', '').strip():
         return 'gemini', GEMINI_MODEL
     if os.environ.get('OPENAI_API_KEY', '').strip():
         return 'openai', course.MODEL
+    if yandex_provider.configured():
+        return 'yandex', yandex_provider.model_name()
     return None, None
 
 
@@ -185,7 +199,7 @@ def chat():
         return json_response({'error': 'Недопустимый источник запроса.'}, 403)
     provider, _model = active_provider()
     if not provider:
-        return json_response({'error': 'ИИ ещё не подключён: добавь GEMINI_API_KEY в настройки Vercel.'}, 503)
+        return json_response({'error': 'ИИ пока не подключён. Проверь API-ключ и параметры выбранного провайдера на сервере.'}, 503)
     if request.headers.get('Sec-Fetch-Site', 'same-origin') not in ('same-origin', 'none'):
         return json_response({'error': 'Недопустимый источник запроса.'}, 403)
     if not request.is_json:
@@ -230,7 +244,12 @@ def chat():
                 import logging
                 logging.exception('Could not refund failed AI request')
     try:
-        output = gemini_reply(scenario, round_no, message, history) if provider == 'gemini' else course.openai_reply(scenario, round_no, message, history)
+        if provider == 'gemini':
+            output = gemini_reply(scenario, round_no, message, history)
+        elif provider == 'yandex':
+            output = yandex_provider.reply(scenario, round_no, message, history)
+        else:
+            output = course.openai_reply(scenario, round_no, message, history)
     except HTTPError as error:
         refund_paid_turn()
         # Keep diagnostics on the server, without exposing keys or student messages.
