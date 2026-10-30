@@ -130,6 +130,12 @@ def json_response(obj: dict, status: int = 200):
     return result
 
 
+@app.get('/healthz')
+def healthz():
+    # Hosting health probe: does not require a paid session or contact an AI provider.
+    return json_response({'ok': True})
+
+
 @app.get('/preview/paid')
 def paid_preview():
     # Safe preview: real checkout is disabled until PAYWALL_ENABLED and credentials are configured.
