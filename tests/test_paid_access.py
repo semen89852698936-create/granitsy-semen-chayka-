@@ -144,6 +144,32 @@ class PaidCourseTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/status').status_code, 401)
         self.assertNotIn('Отчёт после работы', self.client.get('/').get_data(as_text=True))
 
+    def test_lifetime_access_after_years_without_credit_expiration(self):
+        """Course and purchased AI credits do not expire after 30 days."""
+        import time
+        self._pay()
+        now = int(time.time())
+        for years in (1, 5, 30):
+            future = now + years * 366 * 86400
+            status = paid.account_status('student@example.com', now=future)
+            self.assertTrue(status['active'])
+            self.assertTrue(status['lifetime_access'])
+            self.assertEqual(status['total_remaining'], 90)
+            self.assertEqual(status['remaining'], 18)
+
+    def test_repurchase_adds_credits_without_changing_lifetime_entitlement(self):
+        self._pay()
+        old_status = paid.account_status('student@example.com')
+        order = self._create_order()
+        callback = self._post_signed(self._webhook_form(order))
+        self.assertEqual(callback.status_code, 200)
+        updated = paid.account_status('student@example.com')
+        self.assertTrue(updated['lifetime_access'])
+        self.assertEqual(updated['total_remaining'], 180)
+        self.assertEqual(updated['paid_until'] if 'paid_until' in updated else paid.LIFETIME_UNTIL,
+                         paid.LIFETIME_UNTIL)
+        self.assertEqual(old_status['total_remaining'], 90)
+
     def test_failed_gemini_refunds_paid_turn(self):
         self._pay()
         self._login()
