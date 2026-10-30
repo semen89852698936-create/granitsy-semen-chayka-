@@ -148,6 +148,8 @@ def chat():
         return json_response({'error': 'Недопустимый размер запроса.'}, 413)
     try:
         data = request.get_json(silent=False)
+        if not isinstance(data, dict) or data.get('consent') is not True:
+            return json_response({'error': 'Перед ИИ-разговором требуется согласие на передачу учебного текста провайдеру.'}, 400)
         scenario, round_no, message, history = course.validate_request(data)
     except (ValueError, TypeError, json.JSONDecodeError) as error:
         return json_response({'error': str(error)[:160]}, 400)
