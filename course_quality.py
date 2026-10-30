@@ -29,8 +29,10 @@ def practice_for_weakness(scenario: dict, turns: list[dict]) -> str:
     if len(turns) != 3:
         raise ValueError('Three rounds are required')
     score = {metric: sum(turn_metrics(t)[metric] for t in turns) for metric in METRICS}
-    # When tied, prioritize boundary maintenance, then tone, then clarity.
-    weakest = min(('boundaries', 'respect', 'clarity'), key=lambda k: score[k])
+    # In a tie, favor the skill with the weakest single round, not an arbitrary label.
+    # This catches a sharp outburst even when later turns were calm.
+    weakest = min(('boundaries', 'respect', 'clarity'),
+                  key=lambda k: (score[k], min(turn_metrics(t)[k] for t in turns)))
     if all(v >= 5 for v in score.values()):
         return (f'Перенос навыка: представь похожую просьбу по теме «{scenario["title"]}». '
                 'Напиши две короткие версии отказа: без альтернативы и с альтернативой, которую действительно готов предложить. '
