@@ -50,6 +50,9 @@ def access_status():
     email = paid.session_email(token)
     status = paid.account_status(email) if email else {"active": False, "remaining": 0}
     return _reply({"paywall_enabled": True, "ready": True, **status,
+                   "offer_url": os.environ["LEGAL_OFFER_URL"],
+                   "privacy_url": os.environ["LEGAL_PRIVACY_URL"],
+                   "support_email": os.environ["SUPPORT_EMAIL"],
                    "email": (email[:2] + "***@" + email.split("@")[1]) if email else None})
 
 
