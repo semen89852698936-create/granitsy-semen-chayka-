@@ -44,7 +44,9 @@ def gemini_reply(scenario, round_no, message, history):
         'contents': [{'role': 'user', 'parts': [{'text': course.make_prompt(scenario, round_no, message, history)}]}],
         'generationConfig': {
             'responseMimeType': 'application/json',
-            'responseSchema': course.RESPONSE_SCHEMA,
+            # responseJsonSchema accepts JSON Schema keywords such as additionalProperties.
+            # Legacy responseSchema expects an OpenAPI subset and can reject them with HTTP 400.
+            'responseJsonSchema': course.RESPONSE_SCHEMA,
             'maxOutputTokens': 2048,
             'temperature': 0.6,
         },
@@ -120,6 +122,18 @@ def chat():
     try:
         output = gemini_reply(scenario, round_no, message, history) if provider == 'gemini' else course.openai_reply(scenario, round_no, message, history)
     except HTTPError as error:
+        # Keep diagnostics on the server, without exposing keys or student messages.
+        import logging
+        provider_name, _ = active_provider()
+        try:
+            info = json.loads(error.read(4096).decode('utf-8', errors='replace'))
+            detail = info.get('error', {}) if isinstance(info, dict) else {}
+            upstream_status = str(detail.get('status', 'UNKNOWN'))[:60] if isinstance(detail, dict) else 'UNKNOWN'
+        except (ValueError, OSError, UnicodeError):
+            upstream_status = 'UNKNOWN'
+        logging.warning('AI upstream HTTP %s provider=%s status=%s', error.code, provider_name, upstream_status)
+        if error.code == 400:
+            return json_response({'error': 'Модель отклонила формат запроса. Проверь журналы Vercel.'}, 502)
         if error.code == 429:
             return json_response({'error': 'Достигнут временный лимит запросов к модели. Попробуй позже.'}, 503)
         if error.code in (401, 403):
