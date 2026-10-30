@@ -66,5 +66,53 @@ class TrainerTests(unittest.TestCase):
         self.assertIn('чётко', neutralize_praise('Этот ответ идеален. Ты чётко сказал нет.'))
 
 
+    def test_full_three_round_dialogue_and_remaining_count(self):
+        """Simulates all three POST requests with a fake Gemini provider."""
+        sentences = [
+            'Пока мне сложно решиться.',
+            'Отстаньте, я всё сказал!',
+            'Сегодня не смогу. Предлагаю вернуться к этому в понедельник.'
+        ]
+        history = []
+        with patch.object(course_app, 'gemini_reply', side_effect=self.fake_reply):
+            for idx, sentence in enumerate(sentences, start=1):
+                body = self.payload(round_no=idx, history=history)
+                body['message'] = sentence
+                response = self.client.post('/api/chat', json=body)
+                self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+                self.assertEqual(response.json['daily_limit'], course_app.DAILY_LIMIT)
+                self.assertEqual(response.json['daily_remaining'], course_app.DAILY_LIMIT - idx)
+                self.assertEqual(len(response.json['signals']), 3)
+                history.append({'user': sentence, 'reply': response.json['reaction'],
+                                'signals': response.json['signals']})
+            result = response.json
+            self.assertIn('Динамика оценок', result['final_summary'])
+            self.assertTrue(result['next_practice'])
+            self.assertIn('раунда', result['next_practice'])
+        quota = self.client.get('/api/status')
+        self.assertEqual(quota.status_code, 200)
+        self.assertEqual(quota.json['remaining'], course_app.DAILY_LIMIT - 3)
+
+    def test_six_complete_sessions_then_daily_limit(self):
+        """18 successful turns, then 19th is blocked without invoking Gemini."""
+        self.assertEqual(course_app.DAILY_LIMIT, 18)
+        with patch.object(course_app, 'gemini_reply', side_effect=self.fake_reply) as model:
+            for n in range(18):
+                response = self.client.post('/api/chat', json=self.payload())
+                self.assertEqual(response.status_code, 200, f'turn {n + 1}: {response.get_data(as_text=True)}')
+                self.assertEqual(response.json['daily_remaining'], 17 - n)
+            exhausted = self.client.post('/api/chat', json=self.payload())
+            self.assertEqual(exhausted.status_code, 429)
+            self.assertIn('На сегодня тренировка завершена', exhausted.json['error'])
+            self.assertEqual(exhausted.json['remaining'], 0)
+            self.assertEqual(model.call_count, 18)
+
+    def test_invalid_input_does_not_use_daily_allowance(self):
+        self.assertEqual(self.client.get('/api/status').json['remaining'], course_app.DAILY_LIMIT)
+        denied = self.client.post('/api/chat', json=self.payload(consent=False))
+        self.assertEqual(denied.status_code, 400)
+        self.assertEqual(self.client.get('/api/status').json['remaining'], course_app.DAILY_LIMIT)
+
+
 if __name__ == '__main__':
     unittest.main()
