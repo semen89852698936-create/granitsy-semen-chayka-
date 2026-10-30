@@ -57,6 +57,13 @@ class Order(Base):
     paid_at = Column(BigInteger, nullable=True)
 
 
+class RateBucket(Base):
+    __tablename__ = "course_rate_buckets"
+    bucket_key = Column(String(64), primary_key=True)
+    window_start = Column(BigInteger, nullable=False)
+    count = Column(Integer, nullable=False, default=0)
+
+
 class LoginCode(Base):
     __tablename__ = "course_login_codes"
     email = Column(String(254), primary_key=True)
@@ -79,10 +86,13 @@ def enabled() -> bool:
 
 
 def configured() -> bool:
-    return all(os.getenv(k, "").strip() for k in (
+    basics = all(os.getenv(k, "").strip() for k in (
         "DATABASE_URL", "PAID_ACCESS_SECRET", "PRODAMUS_FORM_URL",
-        "PRODAMUS_SECRET", "PRODAMUS_SYS", "RESEND_API_KEY", "MAIL_FROM",
-        "LEGAL_OFFER_URL", "LEGAL_PRIVACY_URL", "SUPPORT_EMAIL")) and len(os.getenv("PAID_ACCESS_SECRET", "")) >= 32
+        "PRODAMUS_SECRET", "PRODAMUS_SYS", "MAIL_FROM",
+        "LEGAL_OFFER_URL", "LEGAL_PRIVACY_URL", "SUPPORT_EMAIL"))
+    email_ready = bool(os.getenv("RESEND_API_KEY", "").strip()) or all(
+        os.getenv(k, "").strip() for k in ("SMTP_HOST", "SMTP_USER", "SMTP_PASS"))
+    return basics and email_ready and len(os.getenv("PAID_ACCESS_SECRET", "")) >= 32
 
 
 def database():
@@ -176,6 +186,30 @@ def _secret() -> bytes:
     return secret.encode("utf-8")
 
 
+def rate_allowed(ip: str, action: str, limit: int, window: int = 600) -> bool:
+    """Persistent per-IP abuse guard across serverless processes.
+
+    IPs are not stored as plaintext; the hash is keyed with the application secret.
+    """
+    ip = (ip or "unknown").strip()[:128]
+    bucket_key = hmac.new(_secret(), f"{action}|{ip}".encode("utf-8"),
+                          hashlib.sha256).hexdigest()
+    now = int(time.time())
+    with Session(database()) as db, db.begin():
+        bucket = db.get(RateBucket, bucket_key, with_for_update=True)
+        if bucket is None:
+            db.add(RateBucket(bucket_key=bucket_key, window_start=now, count=1))
+            return True
+        if now - bucket.window_start >= window:
+            bucket.window_start = now
+            bucket.count = 1
+            return True
+        if bucket.count >= limit:
+            return False
+        bucket.count += 1
+        return True
+
+
 def _code_digest(email: str, code: str) -> str:
     return hmac.new(_secret(), f"{email}\x00{code}".encode("utf-8"), hashlib.sha256).hexdigest()
 
@@ -217,15 +251,39 @@ def send_code(email: str) -> bool:
 
 
 def send_email(to: str, subject: str, body: str) -> None:
-    key = os.environ["RESEND_API_KEY"]
     origin = os.environ["MAIL_FROM"]
-    payload = json.dumps({"from": origin, "to": [to], "subject": subject, "text": body},
-                         ensure_ascii=False).encode("utf-8")
-    req = Request("https://api.resend.com/emails", data=payload, method="POST",
-                  headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
-    with urlopen(req, timeout=12) as response:
-        if response.status not in (200, 201):
-            raise RuntimeError("MAIL_DELIVERY_FAILED")
+    if os.environ.get("RESEND_API_KEY", "").strip():
+        key = os.environ["RESEND_API_KEY"]
+        payload = json.dumps({"from": origin, "to": [to], "subject": subject, "text": body},
+                             ensure_ascii=False).encode("utf-8")
+        req = Request("https://api.resend.com/emails", data=payload, method="POST",
+                      headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+        with urlopen(req, timeout=12) as response:
+            if response.status not in (200, 201):
+                raise RuntimeError("MAIL_DELIVERY_FAILED")
+        return
+    # Existing domain mailboxes can use SMTP over TLS instead of Resend.
+    import smtplib
+    import ssl
+    from email.message import EmailMessage
+    mail = EmailMessage()
+    mail["From"] = origin
+    mail["To"] = to
+    mail["Subject"] = subject
+    mail.set_content(body)
+    host = os.environ["SMTP_HOST"]
+    port = int(os.environ.get("SMTP_PORT", "465"))
+    if port == 465:
+        with smtplib.SMTP_SSL(host, port, timeout=12, context=ssl.create_default_context()) as connection:
+            connection.login(os.environ["SMTP_USER"], os.environ["SMTP_PASS"])
+            connection.send_message(mail)
+    elif port == 587:
+        with smtplib.SMTP(host, port, timeout=12) as connection:
+            connection.starttls(context=ssl.create_default_context())
+            connection.login(os.environ["SMTP_USER"], os.environ["SMTP_PASS"])
+            connection.send_message(mail)
+    else:
+        raise RuntimeError("SMTP must use TLS port 465 or 587")
 
 
 def verify_code(email: str, code: str) -> str | None:
