@@ -116,6 +116,15 @@ def json_response(obj: dict, status: int = 200):
     return result
 
 
+@app.get('/preview/paid')
+def paid_preview():
+    # Safe preview: real checkout is disabled until PAYWALL_ENABLED and credentials are configured.
+    response = send_file(HERE / 'paywall.html', mimetype='text/html')
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['X-Robots-Tag'] = 'noindex, nofollow'
+    return response
+
+
 @app.get('/')
 @app.get('/index.html')
 def home():
