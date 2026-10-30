@@ -104,7 +104,9 @@ def main():
         if code == 429:
             break
     print('WAF_PROBE_STATUS_COUNTS', waf_responses)
-    if not waf_responses.get(429):
+    # Vercel WAF "deny" returns HTTP 403; application daily quota returns HTTP 429.
+    # Confirm the first invalid request was handled by Flask (400), then WAF blocked later.
+    if not waf_responses.get(400) or not (waf_responses.get(403) or waf_responses.get(429)):
         failures.append('No published WAF rate-limit block observed after 14 invalid POST probes')
 
     print('AUDIT_RESULT', 'PASS' if not failures else 'FAIL', 'issues', len(failures))
