@@ -29,7 +29,7 @@ course.MODEL = os.environ.get('OPENAI_MODEL', 'gpt-4.1-mini')
 GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-3.5-flash-lite')
 # Browser-level pilot allowance. For public traffic ALSO enable Vercel WAF rate limiting:
 # cookies can be removed and are not a substitute for network-level enforcement.
-DAILY_LIMIT = max(3, min(60, int(os.environ.get('AI_DAILY_LIMIT', '9'))))
+DAILY_LIMIT = max(3, min(60, int(os.environ.get('AI_DAILY_LIMIT', '18'))))
 COOKIE = 'granitsy_ai_daily'
 COOKIE_MAX_AGE = 86400
 
