@@ -15,7 +15,7 @@ jobs:
           URL="https://snachala-uzhin-preview-chaika2.vercel.app"
           curl --fail --show-error --silent --location --max-time 30 "$URL" -o /tmp/su.html
           echo "HTTP payload size: $(wc -c </tmp/su.html)"
-          head -c 700 /tmp/su.html
+          head -c 150 /tmp/su.html
           echo
           test "$(wc -c </tmp/su.html)" -gt 20000
           grep -q "Сначала ужин" /tmp/su.html
