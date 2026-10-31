@@ -28,4 +28,11 @@ jobs:
             echo "TLS:"
             timeout 8 openssl s_client -connect "$HOST:443" -servername "$HOST" -brief </dev/null 2>&1 | tail -18
           done
+          echo "=== DIRECT ROUTING TEST WHEN DNS HAS NOT PROPAGATED ==="
+          HOST='granitsy-chaika.tw1.ru'
+          IP='201.24.50.115'
+          echo "Test HTTPS with exact SNI and forced DNS mapping"
+          curl -4 -sSv --resolve "$HOST:443:$IP" --connect-timeout 7 --max-time 12 "https://$HOST/healthz" 2>&1 | tail -55
+          echo "Test HTTP with exact Host and forced DNS mapping"
+          curl -4 -sSvI --resolve "$HOST:80:$IP" --connect-timeout 7 --max-time 12 "http://$HOST/" 2>&1 | tail -35
           echo "DIAGNOSTICS COMPLETED"
