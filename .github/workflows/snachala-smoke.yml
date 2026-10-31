@@ -22,4 +22,10 @@ jobs:
           grep -q "1001 повод" /tmp/su.html
           grep -q "function stepsNoun(n)" /tmp/su.html
           grep -q "stepsNoun(r.steps.length)" /tmp/su.html
-          echo "PUBLIC SITE OK; bytes $(wc -c </tmp/su.html)"
+          grep -q 'class="du-wine-glass"' /tmp/su.html
+          grep -q 'font-size:21px;line-height:1.65' /tmp/su.html
+          grep -q 'font-size:20px;line-height:1.6' /tmp/su.html
+          curl --fail --show-error --silent --location --max-time 30 "$URL/favicon.svg" -o /tmp/favicon.svg
+          grep -q '<svg' /tmp/favicon.svg
+          grep -q '#b77d92' /tmp/favicon.svg
+          echo "PUBLIC SITE AND NEW FONT SIZES + WINEGLASS VERIFIED"
