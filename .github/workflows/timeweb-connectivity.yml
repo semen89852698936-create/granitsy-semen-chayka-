@@ -35,4 +35,4 @@ jobs:
           curl -4 -sSv --resolve "$HOST:443:$IP" --connect-timeout 7 --max-time 12 "https://$HOST/healthz" 2>&1 | tail -55
           echo "Test HTTP with exact Host and forced DNS mapping"
           curl -4 -sSvI --resolve "$HOST:80:$IP" --connect-timeout 7 --max-time 12 "http://$HOST/" 2>&1 | tail -35
-          echo "DIAGNOSTICS COMPLETED"
+          echo "DIAGNOSTICS COMPLETED - cert check after Timeweb SSL installed"
