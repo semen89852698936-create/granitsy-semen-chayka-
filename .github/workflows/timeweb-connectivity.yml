@@ -1,0 +1,33 @@
+name: Diagnose Timeweb public domain reachability
+on:
+  push:
+    branches: ['diagnostics/timeweb-connectivity']
+    paths: ['.github/workflows/timeweb-connectivity.yml']
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Test DNS, TLS, HTTP and HTTPS
+        shell: bash
+        run: |
+          set +e
+          HOST='semen89852698936-create-granitsy-semen-chayka-3bfc.twc1.net'
+          echo "=== DNS ==="
+          dig +time=3 +tries=1 "$HOST" A
+          dig +short "$HOST" AAAA
+          echo "=== DNS via Google ==="
+          dig @8.8.8.8 +time=3 +tries=1 "$HOST" A
+          echo "=== HTTPS/TLS ==="
+          curl -4 -sSvI --connect-timeout 7 --max-time 12 "https://$HOST/" 2>&1 | tail -45
+          echo "=== HTTPS healthz ==="
+          curl -4 -sSv --connect-timeout 7 --max-time 12 "https://$HOST/healthz" 2>&1 | tail -40
+          echo "=== HTTP ==="
+          curl -4 -sSvI --connect-timeout 7 --max-time 12 "http://$HOST/" 2>&1 | tail -35
+          echo "=== TLS SNI certificate ==="
+          timeout 8 openssl s_client -connect "$HOST:443" -servername "$HOST" -brief </dev/null 2>&1 | tail -25
+          echo "=== DIRECT APP IP 201.24.50.115, with hostname ==="
+          curl -4 -sSvI --resolve "$HOST:443:201.24.50.115" --connect-timeout 7 --max-time 12 "https://$HOST/" 2>&1 | tail -30
+          echo "DIAGNOSTICS COMPLETED"
