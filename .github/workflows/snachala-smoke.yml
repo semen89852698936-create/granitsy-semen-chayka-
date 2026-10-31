@@ -20,4 +20,6 @@ jobs:
           test "$(wc -c </tmp/su.html)" -gt 20000
           grep -q "Сначала ужин" /tmp/su.html
           grep -q "1001 повод" /tmp/su.html
+          grep -q "function stepsNoun(n)" /tmp/su.html
+          grep -q "stepsNoun(r.steps.length)" /tmp/su.html
           echo "PUBLIC SITE OK; bytes $(wc -c </tmp/su.html)"
