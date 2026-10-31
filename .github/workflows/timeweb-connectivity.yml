@@ -8,26 +8,24 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 4
     steps:
-      - name: Test DNS, TLS, HTTP and HTTPS
+      - name: Test both Timeweb domains externally
         shell: bash
         run: |
           set +e
-          HOST='semen89852698936-create-granitsy-semen-chayka-3bfc.twc1.net'
-          echo "=== DNS ==="
-          dig +time=3 +tries=1 "$HOST" A
-          dig +short "$HOST" AAAA
-          echo "=== DNS via Google ==="
-          dig @8.8.8.8 +time=3 +tries=1 "$HOST" A
-          echo "=== HTTPS/TLS ==="
-          curl -4 -sSvI --connect-timeout 7 --max-time 12 "https://$HOST/" 2>&1 | tail -45
-          echo "=== HTTPS healthz ==="
-          curl -4 -sSv --connect-timeout 7 --max-time 12 "https://$HOST/healthz" 2>&1 | tail -40
-          echo "=== HTTP ==="
-          curl -4 -sSvI --connect-timeout 7 --max-time 12 "http://$HOST/" 2>&1 | tail -35
-          echo "=== TLS SNI certificate ==="
-          timeout 8 openssl s_client -connect "$HOST:443" -servername "$HOST" -brief </dev/null 2>&1 | tail -25
-          echo "=== DIRECT APP IP 201.24.50.115, with hostname ==="
-          curl -4 -sSvI --resolve "$HOST:443:201.24.50.115" --connect-timeout 7 --max-time 12 "https://$HOST/" 2>&1 | tail -30
+          for HOST in 'granitsy-chaika.tw1.ru' 'semen89852698936-create-granitsy-semen-chayka-3bfc.twc1.net'; do
+            echo "=== HOST $HOST ==="
+            echo "A from system DNS"; dig +short +time=2 +tries=1 "$HOST" A
+            echo "A from Google DNS"; dig @8.8.8.8 +short +time=2 +tries=1 "$HOST" A
+            echo "A from Cloudflare DNS"; dig @1.1.1.1 +short +time=2 +tries=1 "$HOST" A
+            echo "HTTPS root:"
+            curl -4 -L -v --connect-timeout 7 --max-time 12 -o /tmp/timeweb-root -w 'curl_http_code=%{http_code} remote_ip=%{remote_ip} tls_verify=%{ssl_verify_result}\n' "https://$HOST/" 2>&1 | tail -30
+            echo "HTTPS /healthz:"
+            curl -4 -v --connect-timeout 7 --max-time 12 "https://$HOST/healthz" 2>&1 | tail -30
+            echo "HTTP redirect:"
+            curl -4 -I -sS --connect-timeout 4 --max-time 6 "http://$HOST/" 2>&1 | head -20
+            echo "TLS:"
+            timeout 8 openssl s_client -connect "$HOST:443" -servername "$HOST" -brief </dev/null 2>&1 | tail -18
+          done
           echo "DIAGNOSTICS COMPLETED"
